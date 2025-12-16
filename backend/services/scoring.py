@@ -31,22 +31,22 @@ class ScoringService:
         max_score = 100.0
         
         # Company size scoring (30 points)
-        company_size = lead_data.get("company_size", 0)
-        if settings.ICP_MIN_COMPANY_SIZE <= company_size <= settings.ICP_MAX_COMPANY_SIZE:
+        company_size = lead_data.get("company_size") or 0
+        if company_size and settings.ICP_MIN_COMPANY_SIZE <= company_size <= settings.ICP_MAX_COMPANY_SIZE:
             score += 30
         elif company_size > 0:
             # Partial credit for companies outside ideal range
             score += 15
         
         # Industry scoring (30 points)
-        company_industry = lead_data.get("company_industry", "")
-        if any(target.lower() in company_industry.lower() 
+        company_industry = lead_data.get("company_industry") or ""
+        if company_industry and any(target.lower() in company_industry.lower() 
                for target in settings.ICP_TARGET_INDUSTRIES):
             score += 30
         
         # Job title/role scoring (25 points)
-        job_title = lead_data.get("job_title", "")
-        if any(role.lower() in job_title.lower() 
+        job_title = lead_data.get("job_title") or ""
+        if job_title and any(role.lower() in job_title.lower() 
                for role in settings.ICP_TARGET_ROLES):
             score += 25
         

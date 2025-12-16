@@ -28,6 +28,12 @@ ENV/
 .env.local
 .env.production
 
+# Gmail API credentials and tokens (SENSITIVE - DO NOT COMMIT)
+backend/credentials.json
+backend/credentials.json.json
+backend/token.json
+gmail_oauth_state.json
+
 # Database
 *.db
 *.sqlite3

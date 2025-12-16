@@ -24,6 +24,10 @@ requests==2.31.0
 
 # Email Communication
 sendgrid==6.11.0
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+google-api-python-client==2.116.0
 
 # Messaging (OPTIONAL - disabled by default, using SendGrid only)
 # twilio==8.12.0

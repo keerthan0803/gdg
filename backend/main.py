@@ -1,6 +1,7 @@
 """
 Main FastAPI application with all routes.
 """
+import os
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -95,17 +96,17 @@ async def create_lead(
     if existing_lead:
         raise HTTPException(status_code=400, detail="Lead with this email already exists")
     
-    # Create new lead
+    # Create new lead (convert empty strings to None)
     lead = Lead(
         email=lead_data.email,
-        first_name=lead_data.first_name,
-        last_name=lead_data.last_name,
-        phone=lead_data.phone,
-        job_title=lead_data.job_title,
-        company_name=lead_data.company_name,
-        company_domain=lead_data.company_domain,
+        first_name=lead_data.first_name or None,
+        last_name=lead_data.last_name or None,
+        phone=lead_data.phone or None,
+        job_title=lead_data.job_title or None,
+        company_name=lead_data.company_name or None,
+        company_domain=lead_data.company_domain or None,
         source=lead_data.source,
-        notes=lead_data.notes,
+        notes=lead_data.notes or None,
         status=LeadStatus.NEW
     )
     
@@ -705,6 +706,288 @@ async def form_webhook(
     except Exception as e:
         logger.error(f"Form webhook error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== GMAIL INTEGRATION ENDPOINTS ====================
+
+@app.post("/api/gmail/sync")
+async def sync_gmail_emails(
+    max_emails: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """
+    Sync emails from Gmail and create leads from sales inquiries.
+    
+    This endpoint:
+    1. Authenticates with Gmail API
+    2. Fetches unread emails matching sales criteria
+    3. Extracts lead information from emails
+    4. Creates leads and triggers autonomous processing
+    5. Marks processed emails as read
+    """
+    from services.gmail import gmail_service
+    
+    try:
+        # Get unread sales emails
+        emails = gmail_service.get_unread_emails(max_results=max_emails)
+        
+        if not emails:
+            return {
+                "status": "success",
+                "message": "No new sales emails found",
+                "emails_processed": 0,
+                "leads_created": 0
+            }
+        
+        leads_created = []
+        errors = []
+        
+        for email_data in emails:
+            try:
+                # Extract lead information
+                lead_info = gmail_service.extract_lead_info(email_data)
+                
+                # Check if lead already exists
+                existing_lead = db.query(Lead).filter(
+                    Lead.email == lead_info['email']
+                ).first()
+                
+                if existing_lead:
+                    logger.info(f"Lead already exists: {lead_info['email']}")
+                    # Mark email as read anyway
+                    gmail_service.mark_as_read(email_data['id'])
+                    continue
+                
+                # Split full name into first and last name
+                full_name = lead_info.get('full_name', '')
+                name_parts = full_name.split(None, 1) if full_name else []
+                first_name = name_parts[0] if len(name_parts) > 0 else None
+                last_name = name_parts[1] if len(name_parts) > 1 else None
+                
+                # Create new lead
+                lead = Lead(
+                    email=lead_info['email'],
+                    first_name=first_name,
+                    last_name=last_name,
+                    company_name=lead_info.get('company'),
+                    phone=lead_info.get('phone'),
+                    source=LeadSource.EMAIL,
+                    status=LeadStatus.NEW,
+                    notes=lead_info.get('notes'),
+                    enrichment_data={
+                        'gmail_thread_id': email_data.get('thread_id'),
+                        'gmail_message_id': email_data.get('id'),
+                        'original_subject': email_data.get('subject'),
+                        'received_date': email_data.get('date')
+                    }
+                )
+                
+                db.add(lead)
+                db.commit()
+                db.refresh(lead)
+                
+                logger.info(f"Created lead from Gmail: {lead.id} - {lead.email}")
+                
+                # Trigger autonomous processing
+                try:
+                    await ai_agent.process_lead(lead, db)
+                    db.refresh(lead)
+                except Exception as e:
+                    logger.error(f"Error processing lead {lead.id}: {e}")
+                
+                # Mark email as read
+                gmail_service.mark_as_read(email_data['id'])
+                
+                # Build full name for display
+                display_name = f"{lead.first_name or ''} {lead.last_name or ''}".strip() or lead.email
+                
+                leads_created.append({
+                    'lead_id': lead.id,
+                    'email': lead.email,
+                    'name': display_name,
+                    'score': lead.lead_score
+                })
+                
+            except Exception as e:
+                error_msg = f"Error processing email from {email_data.get('sender_email')}: {str(e)}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+        
+        return {
+            "status": "success",
+            "message": f"Processed {len(emails)} emails",
+            "emails_processed": len(emails),
+            "leads_created": len(leads_created),
+            "leads": leads_created,
+            "errors": errors if errors else None
+        }
+        
+    except Exception as e:
+        logger.error(f"Gmail sync error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gmail/status")
+async def gmail_status():
+    """Check Gmail API authentication status."""
+    from services.gmail import gmail_service
+    
+    try:
+        is_authenticated = gmail_service.authenticate()
+        
+        return {
+            "authenticated": is_authenticated,
+            "credentials_file_exists": os.path.exists(settings.GMAIL_CREDENTIALS_FILE),
+            "token_file_exists": os.path.exists(settings.GMAIL_TOKEN_FILE),
+            "search_query": settings.GMAIL_SEARCH_QUERY
+        }
+    except Exception as e:
+        return {
+            "authenticated": False,
+            "error": str(e)
+        }
+
+
+@app.get("/api/gmail/authorize")
+async def gmail_authorize():
+    """
+    Initiate Gmail OAuth authorization flow.
+    Returns authorization URL to redirect user to.
+    """
+    from services.gmail import gmail_service
+    
+    try:
+        auth_url = gmail_service.get_authorization_url()
+        
+        if not auth_url:
+            raise HTTPException(status_code=500, detail="Failed to generate authorization URL")
+        
+        return {
+            "authorization_url": auth_url,
+            "message": "Please visit the authorization URL to grant Gmail access"
+        }
+        
+    except Exception as e:
+        logger.error(f"Gmail authorization error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/gmail/oauth2callback")
+async def gmail_oauth_callback(
+    code: str = Query(..., description="Authorization code"),
+    state: str = Query(..., description="State parameter"),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle OAuth2 callback from Google.
+    This endpoint receives the authorization code and exchanges it for tokens.
+    """
+    from services.gmail import gmail_service
+    
+    try:
+        success = gmail_service.handle_oauth_callback(code, state)
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="OAuth callback failed")
+        
+        # Return HTML page with success message
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Gmail Authorization Successful</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                }
+                .container {
+                    background: white;
+                    padding: 40px;
+                    border-radius: 10px;
+                    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+                    text-align: center;
+                    max-width: 500px;
+                }
+                h1 { color: #28a745; margin-bottom: 20px; }
+                p { color: #666; line-height: 1.6; }
+                .button {
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 12px 30px;
+                    background: #667eea;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 5px;
+                    font-weight: bold;
+                }
+                .button:hover { background: #5568d3; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>✓ Authorization Successful!</h1>
+                <p>Your Gmail account has been connected successfully.</p>
+                <p>You can now sync sales emails and automatically create leads.</p>
+                <a href="/" class="button">Go to Dashboard</a>
+            </div>
+            <script>
+                // Auto-close after 3 seconds
+                setTimeout(() => window.close(), 3000);
+            </script>
+        </body>
+        </html>
+        """
+        
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+        
+    except Exception as e:
+        logger.error(f"OAuth callback error: {e}")
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Gmail Authorization Failed</title>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: #f44336;
+                }}
+                .container {{
+                    background: white;
+                    padding: 40px;
+                    border-radius: 10px;
+                    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+                    text-align: center;
+                }}
+                h1 {{ color: #f44336; }}
+                p {{ color: #666; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>✗ Authorization Failed</h1>
+                <p>Error: {str(e)}</p>
+                <p>Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content, status_code=400)
 
 
 if __name__ == "__main__":

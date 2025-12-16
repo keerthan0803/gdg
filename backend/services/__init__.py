@@ -5,6 +5,7 @@ from .communication import communication_service
 from .crm import crm_service
 from .calendar import calendar_service
 from .agent import ai_agent
+from .gmail import gmail_service
 
 __all__ = [
     'enrichment_service',
@@ -12,5 +13,6 @@ __all__ = [
     'communication_service',
     'crm_service',
     'calendar_service',
-    'ai_agent'
+    'ai_agent',
+    'gmail_service'
 ]

@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     CLEARBIT_API_KEY: str = ""
     HUNTER_API_KEY: str = ""
     
+    # Gmail API Integration
+    GMAIL_CREDENTIALS_FILE: str = "credentials.json"  # OAuth2 credentials from Google Cloud Console
+    GMAIL_TOKEN_FILE: str = "token.json"  # Generated after first authentication
+    GMAIL_LABEL_FILTER: str = "INBOX"  # Which label/folder to check
+    GMAIL_SEARCH_QUERY: str = "is:unread subject:(inquiry OR quote OR sales OR demo OR contact)"  # Filter emails
+    GMAIL_REDIRECT_URI: str = "http://localhost:8000/api/gmail/oauth2callback"  # OAuth callback for web apps
+    
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
     
