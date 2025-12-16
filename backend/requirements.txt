@@ -17,6 +17,7 @@ email-validator==2.2.0
 openai==1.10.0
 langchain==0.1.4
 langchain-openai==0.0.2
+# Note: numpy installed as langchain dependency
 
 # HTTP Client
 httpx==0.26.0
